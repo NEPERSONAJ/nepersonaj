@@ -20,8 +20,8 @@ export function Login() {
   useEffect(() => {
     const mouseMove = (e: MouseEvent) => {
       setMousePosition({
-        x: e.clientX,
-        y: e.clientY
+        x: e.clientX + window.scrollX,
+        y: e.clientY + window.scrollY
       });
     };
 
