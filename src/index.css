@@ -13,7 +13,7 @@
   }
 
   * {
-    cursor: none;
+    cursor: none !important;
   }
 
   #root {
@@ -21,7 +21,7 @@
   }
 
   .custom-cursor {
-    @apply fixed w-8 h-8 rounded-full pointer-events-none z-50;
+    @apply fixed w-8 h-8 rounded-full pointer-events-none z-[9999];
     background: #00ff8c;
     box-shadow: 0 0 20px rgba(0, 255, 140, 0.5);
     transition: transform 0.2s ease;
