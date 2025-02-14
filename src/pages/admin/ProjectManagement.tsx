@@ -1,59 +1,75 @@
 import React, { useEffect, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Pencil, Trash2, Image, Loader2, Wand2, Sparkles } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Plus, Pencil, Trash2, Image, Loader2, Wand2, Sparkles, Star } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
 import { uploadImage } from '../../lib/imgbb';
 import { generateText } from '../../lib/ai';
 import { GenerationProgress } from '../../components/GenerationProgress';
-import type { BlogPost, GenerationStatus } from '../../types/database';
+import type { Project, GenerationStatus } from '../../types/database';
 
-interface BlogPostForm {
+interface ProjectForm {
   title: string;
-  content: string;
+  description: string;
   image_url: string;
   meta_title: string;
   meta_description: string;
   meta_keywords: string;
   og_image: string;
+  og_description: string;
   canonical_url: string;
-  images: { url: string; alt: string }[];
+  status: 'draft' | 'published';
+  slug: string;
+  featured: boolean;
+  sort_order: number;
+  technologies: { name: string; icon_url?: string; color?: string }[];
 }
 
-export function BlogManagement() {
-  const [posts, setPosts] = useState<BlogPost[]>([]);
+export function ProjectManagement() {
+  const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editingPost, setEditingPost] = useState<BlogPost | null>(null);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [imageUploading, setImageUploading] = useState(false);
   const [showForm, setShowForm] = useState(false);
-  const [showPosts, setShowPosts] = useState(true);
+  const [showProjects, setShowProjects] = useState(true);
   const [additionalImages, setAdditionalImages] = useState<{ url: string; alt: string }[]>([]);
   const [topic, setTopic] = useState('');
   const [generatingField, setGeneratingField] = useState<string | null>(null);
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus | null>(null);
   
-  const { register, handleSubmit, reset, setValue, watch } = useForm<BlogPostForm>();
+  const { register, handleSubmit, reset, setValue, watch } = useForm<ProjectForm>({
+    defaultValues: {
+      technologies: [],
+      status: 'draft',
+      featured: false,
+      sort_order: 0
+    }
+  });
+  
   const imageUrl = watch('image_url');
+  const featured = watch('featured');
 
   useEffect(() => {
-    fetchPosts();
+    fetchProjects();
   }, []);
 
-  async function fetchPosts() {
+  async function fetchProjects() {
     try {
       const { data, error } = await supabase
-        .from('blog_posts')
+        .from('projects')
         .select(`
           *,
-          images:blog_post_images(*)
+          images:project_images(*),
+          technologies:project_technologies(*)
         `)
+        .order('sort_order', { ascending: true })
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setPosts(data || []);
+      setProjects(data || []);
     } catch (error) {
-      toast.error('Ошибка при загрузке постов');
+      toast.error('Ошибка при загрузке проектов');
     } finally {
       setLoading(false);
     }
@@ -65,7 +81,7 @@ export function BlogManagement() {
       return;
     }
 
-    const fields = ['title', 'content', 'meta_title', 'meta_description', 'meta_keywords'] as const;
+    const fields = ['title', 'description', 'meta_title', 'meta_description', 'meta_keywords'] as const;
     
     for (const field of fields) {
       try {
@@ -134,10 +150,8 @@ export function BlogManagement() {
       const urls = await Promise.all(uploadPromises);
       
       if (urls.length > 0) {
-        // Первое изображение становится основным
         setValue('image_url', urls[0]);
         
-        // Остальные добавляются в дополнительные
         if (urls.length > 1) {
           const newImages = urls.slice(1).map(url => ({ url, alt: '' }));
           setAdditionalImages([...additionalImages, ...newImages]);
@@ -152,40 +166,41 @@ export function BlogManagement() {
     }
   };
 
-  const onSubmit = async (data: BlogPostForm) => {
+  const onSubmit = async (data: ProjectForm) => {
     try {
-      if (editingPost) {
-        // Обновляем основную информацию поста
-        const { error: postError } = await supabase
-          .from('blog_posts')
+      if (editingProject) {
+        const { error: projectError } = await supabase
+          .from('projects')
           .update({
             title: data.title,
-            content: data.content,
+            description: data.description,
             image_url: data.image_url,
             meta_title: data.meta_title || null,
             meta_description: data.meta_description || null,
             meta_keywords: data.meta_keywords ? data.meta_keywords.split(',').map(k => k.trim()) : null,
             og_image: data.og_image || data.image_url,
-            canonical_url: data.canonical_url || null
+            og_description: data.og_description || null,
+            canonical_url: data.canonical_url || null,
+            status: data.status,
+            slug: data.slug || null,
+            featured: data.featured,
+            sort_order: data.sort_order
           })
-          .eq('id', editingPost.id);
+          .eq('id', editingProject.id);
 
-        if (postError) throw postError;
+        if (projectError) throw projectError;
 
-        // Обновляем дополнительные изображения
         if (additionalImages.length > 0) {
-          // Удаляем старые изображения
           await supabase
-            .from('blog_post_images')
+            .from('project_images')
             .delete()
-            .eq('post_id', editingPost.id);
+            .eq('project_id', editingProject.id);
 
-          // Добавляем новые
           const { error: imagesError } = await supabase
-            .from('blog_post_images')
+            .from('project_images')
             .insert(
               additionalImages.map((img, index) => ({
-                post_id: editingPost.id,
+                project_id: editingProject.id,
                 image_url: img.url,
                 alt_text: img.alt,
                 sort_order: index
@@ -195,33 +210,57 @@ export function BlogManagement() {
           if (imagesError) throw imagesError;
         }
 
-        toast.success('Пост обновлен');
+        if (data.technologies.length > 0) {
+          await supabase
+            .from('project_technologies')
+            .delete()
+            .eq('project_id', editingProject.id);
+
+          const { error: techError } = await supabase
+            .from('project_technologies')
+            .insert(
+              data.technologies.map((tech, index) => ({
+                project_id: editingProject.id,
+                name: tech.name,
+                icon_url: tech.icon_url || null,
+                color: tech.color || null,
+                sort_order: index
+              }))
+            );
+
+          if (techError) throw techError;
+        }
+
+        toast.success('Проект обновлен');
       } else {
-        // Создаем новый пост
-        const { data: newPost, error: postError } = await supabase
-          .from('blog_posts')
+        const { data: newProject, error: projectError } = await supabase
+          .from('projects')
           .insert([{
             title: data.title,
-            content: data.content,
+            description: data.description,
             image_url: data.image_url,
             meta_title: data.meta_title || null,
             meta_description: data.meta_description || null,
             meta_keywords: data.meta_keywords ? data.meta_keywords.split(',').map(k => k.trim()) : null,
             og_image: data.og_image || data.image_url,
-            canonical_url: data.canonical_url || null
+            og_description: data.og_description || null,
+            canonical_url: data.canonical_url || null,
+            status: data.status,
+            slug: data.slug || null,
+            featured: data.featured,
+            sort_order: data.sort_order
           }])
           .select()
           .single();
 
-        if (postError) throw postError;
+        if (projectError) throw projectError;
 
-        // Добавляем дополнительные изображения
-        if (additionalImages.length > 0 && newPost) {
+        if (additionalImages.length > 0 && newProject) {
           const { error: imagesError } = await supabase
-            .from('blog_post_images')
+            .from('project_images')
             .insert(
               additionalImages.map((img, index) => ({
-                post_id: newPost.id,
+                project_id: newProject.id,
                 image_url: img.url,
                 alt_text: img.alt,
                 sort_order: index
@@ -231,34 +270,55 @@ export function BlogManagement() {
           if (imagesError) throw imagesError;
         }
 
-        toast.success('Пост создан');
+        if (data.technologies.length > 0 && newProject) {
+          const { error: techError } = await supabase
+            .from('project_technologies')
+            .insert(
+              data.technologies.map((tech, index) => ({
+                project_id: newProject.id,
+                name: tech.name,
+                icon_url: tech.icon_url || null,
+                color: tech.color || null,
+                sort_order: index
+              }))
+            );
+
+          if (techError) throw techError;
+        }
+
+        toast.success('Проект создан');
       }
 
       reset();
-      setEditingPost(null);
+      setEditingProject(null);
       setAdditionalImages([]);
       setShowForm(false);
-      setShowPosts(true);
-      fetchPosts();
+      setShowProjects(true);
+      fetchProjects();
     } catch (error) {
-      toast.error('Ошибка при сохранении поста');
+      toast.error('Ошибка при сохранении проекта');
     }
   };
 
-  const handleEdit = (post: BlogPost) => {
-    setEditingPost(post);
+  const handleEdit = (project: Project) => {
+    setEditingProject(project);
     setShowForm(true);
-    setShowPosts(false);
-    setValue('title', post.title);
-    setValue('content', post.content);
-    setValue('image_url', post.image_url);
-    setValue('meta_title', post.meta_title || '');
-    setValue('meta_description', post.meta_description || '');
-    setValue('meta_keywords', post.meta_keywords?.join(', ') || '');
-    setValue('og_image', post.og_image || '');
-    setValue('canonical_url', post.canonical_url || '');
+    setShowProjects(false);
+    setValue('title', project.title);
+    setValue('description', project.description);
+    setValue('image_url', project.image_url);
+    setValue('meta_title', project.meta_title || '');
+    setValue('meta_description', project.meta_description || '');
+    setValue('meta_keywords', project.meta_keywords?.join(', ') || '');
+    setValue('og_image', project.og_image || '');
+    setValue('og_description', project.og_description || '');
+    setValue('canonical_url', project.canonical_url || '');
+    setValue('status', project.status);
+    setValue('slug', project.slug || '');
+    setValue('featured', project.featured);
+    setValue('sort_order', project.sort_order);
     setAdditionalImages(
-      post.images?.map(img => ({
+      project.images?.map(img => ({
         url: img.image_url,
         alt: img.alt_text || ''
       })) || []
@@ -266,19 +326,19 @@ export function BlogManagement() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Вы уверены, что хотите удалить этот пост?')) return;
+    if (!confirm('Вы уверены, что хотите удалить этот проект?')) return;
 
     try {
       const { error } = await supabase
-        .from('blog_posts')
+        .from('projects')
         .delete()
         .eq('id', id);
 
       if (error) throw error;
-      toast.success('Пост удален');
-      fetchPosts();
+      toast.success('Проект удален');
+      fetchProjects();
     } catch (error) {
-      toast.error('Ошибка при удалении поста');
+      toast.error('Ошибка при удалении проекта');
     }
   };
 
@@ -294,29 +354,27 @@ export function BlogManagement() {
     <div className="space-y-8">
       <GenerationProgress status={generationStatus} />
       
-      {/* Список постов */}
       <div className="flex justify-between items-center">
-        <h2 className="text-xl lg:text-2xl font-bold gradient-text">Блог</h2>
+        <h2 className="text-xl lg:text-2xl font-bold gradient-text">Проекты</h2>
         <button
           onClick={() => {
             setShowForm(true);
-            setEditingPost(null);
-            setShowPosts(false);
+            setEditingProject(null);
+            setShowProjects(false);
             reset();
             setAdditionalImages([]);
           }}
           className="px-4 py-2 bg-[#00ff8c]/20 rounded-lg flex items-center gap-2 hover:bg-[#00ff8c]/30 transition-colors"
         >
           <Plus className="w-5 h-5" />
-          Создать пост
+          Создать проект
         </button>
       </div>
 
-      {/* Форма создания/редактирования */}
       {showForm && (
         <div className="bg-[#12121A] p-6 rounded-lg neon-border">
           <h2 className="text-xl lg:text-2xl font-bold mb-6 gradient-text">
-            {editingPost ? 'Редактировать пост' : 'Создать новый пост'}
+            {editingProject ? 'Редактировать проект' : 'Создать новый проект'}
           </h2>
           <div className="mb-6">
             <div className="flex gap-4 items-center mb-4">
@@ -337,7 +395,7 @@ export function BlogManagement() {
                 ) : (
                   <Wand2 className="w-5 h-5" />
                 )}
-                Сгенерировать пост
+                Сгенерировать описание
               </button>
             </div>
           </div>
@@ -346,7 +404,7 @@ export function BlogManagement() {
               <div className="flex gap-4 mb-4">
                 <input
                   {...register('title', { required: 'Заголовок обязателен' })}
-                  placeholder="Заголовок поста"
+                  placeholder="Название проекта"
                   className="flex-1 p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none"
                 />
                 <button
@@ -382,26 +440,23 @@ export function BlogManagement() {
                   )}
                 </button>
               </div>
-              <p className="mt-1 text-sm text-gray-400">
-                Рекомендуемая длина: 50-60 символов
-              </p>
             </div>
 
             <div>
               <div className="flex gap-4 mb-4">
                 <textarea
-                  {...register('content', { required: 'Содержание обязательно' })}
-                  placeholder="Содержание поста"
+                  {...register('description', { required: 'Описание обязательно' })}
+                  placeholder="Описание проекта"
                   rows={6}
                   className="flex-1 p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none resize-none"
                 />
                 <button
                   type="button"
-                  onClick={() => handleGenerate('content')}
-                  disabled={!topic || generatingField === 'content'}
+                  onClick={() => handleGenerate('description')}
+                  disabled={!topic || generatingField === 'description'}
                   className="px-4 py-2 bg-[#00ff8c]/20 rounded-lg flex items-center gap-2 hover:bg-[#00ff8c]/30 transition-colors disabled:opacity-50"
                 >
-                  {generatingField === 'content' ? (
+                  {generatingField === 'description' ? (
                     <Loader2 className="w-5 h-5 animate-spin" />
                   ) : (
                     <Sparkles className="w-5 h-5" />
@@ -412,7 +467,7 @@ export function BlogManagement() {
                 <textarea
                   {...register('meta_description')}
                   placeholder="SEO описание"
-                  title="Краткое описание страницы для поисковых систем"
+                  title="Краткое описание для поисковых систем"
                   rows={2}
                   className="flex-1 p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none resize-none"
                 />
@@ -429,9 +484,6 @@ export function BlogManagement() {
                   )}
                 </button>
               </div>
-              <p className="mt-1 text-sm text-gray-400">
-                Рекомендуемая длина: 150-160 символов
-              </p>
             </div>
 
             <div>
@@ -455,9 +507,6 @@ export function BlogManagement() {
                   )}
                 </button>
               </div>
-              <p className="mt-1 text-sm text-gray-400">
-                Пример: веб-разработка, React, JavaScript
-              </p>
             </div>
 
             <div>
@@ -467,9 +516,49 @@ export function BlogManagement() {
                 title="URL основной версии страницы"
                 className="w-full p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none"
               />
-              <p className="mt-1 text-sm text-gray-400">
-                Пример: https://example.com/blog/my-post
-              </p>
+            </div>
+
+            <div>
+              <input
+                {...register('slug')}
+                placeholder="URL-slug (например: my-awesome-project)"
+                title="URL-friendly название проекта"
+                className="w-full p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div>
+                <select
+                  {...register('status')}
+                  className="w-full p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none"
+                >
+                  <option value="draft">Черновик</option>
+                  <option value="published">Опубликован</option>
+                </select>
+              </div>
+              <div>
+                <input
+                  {...register('sort_order', { valueAsNumber: true })}
+                  type="number"
+                  placeholder="Порядок сортировки"
+                  className="w-full p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  {...register('featured')}
+                  type="checkbox"
+                  className="hidden"
+                />
+                <div className={`w-6 h-6 rounded border ${featured ? 'bg-[#00ff8c]/20 border-[#00ff8c]' : 'border-gray-600'} flex items-center justify-center transition-colors`}>
+                  {featured && <Star className="w-4 h-4 text-[#00ff8c]" />}
+                </div>
+                <span>Избранный проект</span>
+              </label>
             </div>
 
             <div>
@@ -497,7 +586,6 @@ export function BlogManagement() {
                 {...register('image_url')}
                 type="hidden"
               />
-              {/* Дополнительные изображения */}
               {additionalImages.length > 0 && (
                 <div className="mt-4 space-y-4">
                   <h3 className="text-lg font-semibold">Дополнительные изображения</h3>
@@ -541,7 +629,7 @@ export function BlogManagement() {
                 className="px-6 py-2 bg-[#00ff8c]/20 rounded-lg flex items-center gap-2 hover:bg-[#00ff8c]/30 transition-colors"
                 disabled={imageUploading}
               >
-                {editingPost ? (
+                {editingProject ? (
                   <>
                     <Pencil className="w-5 h-5" />
                     Обновить
@@ -553,12 +641,12 @@ export function BlogManagement() {
                   </>
                 )}
               </button>
-              {editingPost && (
+              {editingProject && (
                 <button
                   type="button"
                   onClick={() => {
-                    setEditingPost(null);
-                    setShowPosts(true);
+                    setEditingProject(null);
+                    setShowProjects(true);
                     reset();
                     setShowForm(false);
                   }}
@@ -572,20 +660,20 @@ export function BlogManagement() {
         </div>
       )}
 
-      {showPosts && (
+      {showProjects && (
         <div className="grid gap-6">
-          {posts.map((post) => (
+          {projects.map((project) => (
             <motion.div
-              key={post.id}
+              key={project.id}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               className="bg-[#12121A] p-4 lg:p-6 rounded-lg neon-border"
             >
               <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
-                {post.image_url ? (
+                {project.image_url ? (
                   <img
-                    src={post.image_url}
-                    alt={post.title}
+                    src={project.image_url}
+                    alt={project.title}
                     className="w-full lg:w-48 h-48 lg:h-32 object-cover rounded-lg"
                   />
                 ) : (
@@ -594,18 +682,23 @@ export function BlogManagement() {
                   </div>
                 )}
                 <div className="flex-1">
-                  <h3 className="text-xl font-bold mb-2">
-                    {post.title}
-                    {post.meta_title && (
-                      <span className="ml-2 text-sm text-gray-400">
-                        (SEO: {post.meta_title})
-                      </span>
+                  <div className="flex items-center gap-2 mb-2">
+                    <h3 className="text-xl font-bold">
+                      {project.title}
+                      {project.meta_title && (
+                        <span className="ml-2 text-sm text-gray-400">
+                          (SEO: {project.meta_title})
+                        </span>
+                      )}
+                    </h3>
+                    {project.featured && (
+                      <Star className="w-5 h-5 text-[#00ff8c]" />
                     )}
-                  </h3>
-                  <p className="text-gray-400 mb-4 line-clamp-2">{post.content}</p>
-                  {post.meta_keywords && post.meta_keywords.length > 0 && (
+                  </div>
+                  <p className="text-gray-400 mb-4 line-clamp-2">{project.description}</p>
+                  {project.meta_keywords && project.meta_keywords.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-4">
-                      {post.meta_keywords.map((keyword, index) => (
+                      {project.meta_keywords.map((keyword, index) => (
                         <span
                           key={index}
                           className="px-2 py-1 text-sm bg-[#00ff8c]/10 rounded-full text-[#00ff8c]"
@@ -615,9 +708,28 @@ export function BlogManagement() {
                       ))}
                     </div>
                   )}
-                  {post.images && post.images.length > 0 && (
+                  {project.technologies && project.technologies.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      {project.technologies.map((tech) => (
+                        <span
+                          key={tech.id}
+                          className="px-2 py-1 text-sm bg-[#00ff8c]/10 rounded-full text-[#00ff8c] flex items-center gap-1"
+                        >
+                          {tech.icon_url && (
+                            <img
+                              src={tech.icon_url}
+                              alt={tech.name}
+                              className="w-4 h-4"
+                            />
+                          )}
+                          {tech.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {project.images && project.images.length > 0 && (
                     <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
-                      {post.images.map((image) => (
+                      {project.images.map((image) => (
                         <img
                           key={image.id}
                           src={image.image_url}
@@ -629,14 +741,14 @@ export function BlogManagement() {
                   )}
                   <div className="flex flex-wrap gap-2 lg:gap-4">
                     <button
-                      onClick={() => handleEdit(post)}
+                      onClick={() => handleEdit(project)}
                       className="px-4 py-2 bg-[#00ff8c]/20 rounded-lg flex items-center gap-2 hover:bg-[#00ff8c]/30 transition-colors"
                     >
                       <Pencil className="w-4 h-4" />
                       Редактировать
                     </button>
                     <button
-                      onClick={() => handleDelete(post.id)}
+                      onClick={() => handleDelete(project.id)}
                       className="px-4 py-2 bg-red-500/20 rounded-lg flex items-center gap-2 hover:bg-red-500/30 transition-colors text-red-500"
                     >
                       <Trash2 className="w-4 h-4" />

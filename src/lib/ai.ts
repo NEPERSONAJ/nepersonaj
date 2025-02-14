@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { rateLimiter } from './utils/rateLimit';
 
 interface AISettings {
   text_ai_provider: string;
@@ -7,241 +8,200 @@ interface AISettings {
   text_ai_endpoint_url: string | null;
   text_ai_temperature: number;
   text_ai_max_tokens: number;
-  image_ai_provider: string;
-  image_ai_model: string;
-  image_ai_api_key: string | null;
-  image_ai_endpoint_url: string | null
-  storage_provider: string;
-  storage_api_key: string | null;
-  storage_endpoint_url: string | null;
+}
+
+export interface GenerationStatus {
+  field: string;
+  progress: number;
+  status: 'pending' | 'generating' | 'completed' | 'error';
+  error?: string;
+}
+
+export class ApiError extends Error {
+  constructor(message: string, public statusCode?: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export const fieldPrompts = {
+  title: {
+    prompt: (topic: string) => `Создай краткий, привлекательный заголовок для статьи о ${topic}. Только заголовок, без кавычек и пояснений.`,
+    maxTokens: 60
+  },
+  description: {
+    prompt: (topic: string) => `Напиши подробное описание проекта о ${topic}. Используй профессиональный стиль, опиши ключевые особенности и преимущества. Только текст описания, без пояснений.`,
+    maxTokens: 500
+  },
+  content: {
+    prompt: (topic: string) => `Напиши подробную статью о ${topic}. Используй подзаголовки, списки и примеры. Только текст статьи, без пояснений.`,
+    maxTokens: 2000
+  },
+  meta_title: {
+    prompt: (topic: string) => `Создай SEO-заголовок для статьи о ${topic}. Только заголовок, без кавычек и пояснений.`,
+    maxTokens: 60
+  },
+  meta_description: {
+    prompt: (topic: string) => `Напиши краткое SEO-описание для статьи о ${topic}. Только описание, без кавычек и пояснений.`,
+    maxTokens: 160
+  },
+  meta_keywords: {
+    prompt: (topic: string) => `Создай список из 5-7 ключевых слов через запятую для статьи о ${topic}. Верните в виде значений, разделенных запятыми.`,
+    maxTokens: 100
+  }
+};
+
+export function cleanAiResponse(text: string): string {
+  return text
+    .replace(/[""]/g, '')
+    .replace(/[*#]/g, '')
+    .replace(/^\s+|\s+$/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\$~~~\$.*?\$~~~\$/g, '')
+    .replace(/^["'\s]+|["'\s]+$/g, '');
 }
 
 async function getAISettings(): Promise<AISettings> {
   const { data, error } = await supabase
     .from('site_settings')
-    .select(`
-      text_ai_provider,
-      text_ai_model,
-      text_ai_api_key,
-      text_ai_endpoint_url,
-      text_ai_temperature,
-      text_ai_max_tokens,
-      image_ai_provider,
-      image_ai_model,
-      image_ai_api_key,
-      image_ai_endpoint_url,
-      storage_provider,
-      storage_api_key,
-      storage_endpoint_url
-    `)
+    .select('*')
     .single();
 
-  if (error) throw error;
+  if (error) throw new Error('Ошибка при загрузке настроек AI');
+  if (!data) throw new Error('Настройки AI не найдены');
   return data;
 }
 
-export async function generateText(prompt: string, field: string): Promise<string> {
-  const settings = await getAISettings();
-  
-  if (!settings.text_ai_api_key) {
-    throw new Error('API ключ для генерации текста не настроен в настройках');
-  }
+async function makeApiRequest<T>(endpoint: string, data: any, apiKey: string): Promise<T> {
+  return rateLimiter.enqueue(async () => {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(data)
+    });
 
-  let endpoint = '';
-  let body = {};
-  let headers = {};
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.error?.message || `Ошибка API (${response.status})`,
+        response.status
+      );
+    }
 
-  switch (settings.text_ai_provider) {
-    case 'openai':
-      endpoint = settings.text_ai_endpoint_url || 'https://api.openai.com/v1/chat/completions';
-      body = {
-        model: settings.text_ai_model,
-        messages: [{
-          role: 'system',
-          content: `Ты опытный копирайтер. Генерируй ${field} для блога.`
-        }, {
-          role: 'user',
-          content: prompt
-        }],
-        temperature: settings.text_ai_temperature,
-        max_tokens: settings.text_ai_max_tokens
-      };
-      headers = {
-        'Authorization': `Bearer ${settings.text_ai_api_key}`,
-        'Content-Type': 'application/json'
-      };
-      break;
-
-    case 'deepseek':
-      endpoint = settings.text_ai_endpoint_url || 'https://www.deepseekapp.io/v1/chat/completions';
-      body = {
-        model: settings.text_ai_model,
-        messages: [{
-          role: 'system',
-          content: `Ты опытный копирайтер. Генерируй ${field} для блога.`
-        }, {
-          role: 'user',
-          content: prompt
-        }],
-        temperature: settings.text_ai_temperature,
-        max_tokens: settings.text_ai_max_tokens
-      };
-      headers = {
-        'Authorization': `Bearer ${settings.text_ai_api_key}`,
-        'Content-Type': 'application/json'
-      };
-      break;
-
-    case 'anthropic':
-      endpoint = settings.text_ai_endpoint_url || 'https://api.anthropic.com/v1/messages';
-      body = {
-        model: settings.text_ai_model,
-        messages: [{
-          role: 'user',
-          content: `Сгенерируй ${field} для блога на тему: ${prompt}`
-        }],
-        max_tokens: settings.text_ai_max_tokens
-      };
-      headers = {
-        'x-api-key': settings.text_ai_api_key,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      };
-      break;
-
-    case 'custom':
-      if (!settings.text_ai_endpoint_url) {
-        throw new Error('URL для кастомного AI не настроен');
-      }
-      endpoint = settings.text_ai_endpoint_url;
-      body = {
-        prompt,
-        type: field,
-        temperature: settings.text_ai_temperature,
-        max_tokens: settings.text_ai_max_tokens
-      };
-      headers = {
-        'Authorization': `Bearer ${settings.text_ai_api_key}`,
-        'Content-Type': 'application/json'
-      };
-      break;
-
-    default:
-      throw new Error('Неподдерживаемый провайдер AI');
-  }
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
+    return response.json();
   });
-
-  if (!response.ok) {
-    throw new Error('Ошибка при генерации текста');
-  }
-
-  const data = await response.json();
-  
-  // Извлекаем текст из ответа в зависимости от провайдера
-  switch (settings.text_ai_provider) {
-    case 'openai':
-      return data.choices[0].message.content;
-    case 'deepseek':
-      return data.choices[0].message.content;
-
-    case 'anthropic':
-      return data.content[0].text;
-    case 'custom':
-      return data.text;
-    default:
-      throw new Error('Неподдерживаемый формат ответа');
-  }
 }
 
-export async function generateImage(prompt: string): Promise<string> {
-  const settings = await getAISettings();
-  
-  if (!settings.image_ai_api_key) {
-    throw new Error('API ключ для генерации изображений не настроен в настройках');
-  }
+export async function generateText(
+  topic: string,
+  field: keyof typeof fieldPrompts,
+  onProgress?: (status: GenerationStatus) => void
+): Promise<string> {
+  try {
+    onProgress?.({
+      field,
+      progress: 0,
+      status: 'generating'
+    });
 
-  let endpoint = '';
-  let body = {};
-  let headers = {};
+    const settings = await getAISettings();
+    
+    if (!settings.text_ai_api_key) {
+      throw new Error('API ключ для генерации текста не настроен');
+    }
 
-  switch (settings.image_ai_provider) {
-    case 'openai':
-      endpoint = settings.image_ai_endpoint_url || 'https://api.openai.com/v1/images/generations';
-      body = {
-        model: settings.image_ai_model,
-        prompt: prompt,
-        n: 1,  // Генерируем одно изображение за раз
-        size: '1024x1024',
-        quality: 'standard',
-        style: 'natural'
+    onProgress?.({
+      field,
+      progress: 25,
+      status: 'generating'
+    });
+
+    const endpoint = settings.text_ai_endpoint_url;
+    if (!endpoint) {
+      throw new Error('URL эндпоинта для генерации текста не настроен');
+    }
+
+    const prompt = fieldPrompts[field].prompt(topic);
+    
+    let requestBody: any = {};
+    
+    if (settings.text_ai_provider === 'openai') {
+      requestBody = {
+        model: settings.text_ai_model,
+        messages: [
+          {
+            role: 'system',
+            content: 'Ты SEO-копирайтер. Создавай только чистый текст без форматирования и пояснений.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: settings.text_ai_temperature,
+        max_tokens: fieldPrompts[field].maxTokens,
+        stream: false
       };
-      headers = {
-        'Authorization': `Bearer ${settings.image_ai_api_key}`,
-        'Content-Type': 'application/json'
+    } else {
+      requestBody = {
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        model: settings.text_ai_model,
+        stream: false
       };
-      break;
+    }
 
-    case 'stability':
-      endpoint = settings.image_ai_endpoint_url || 'https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image';
-      body = {
-        text_prompts: [{ text: prompt }],
-        model: settings.image_ai_model,
-        height: 1024,
-        width: 1024,
-        steps: 30,
-        samples: 1
-      };
-      headers = {
-        'Authorization': `Bearer ${settings.image_ai_api_key}`,
-        'Content-Type': 'application/json'
-      };
-      break;
+    onProgress?.({
+      field,
+      progress: 50,
+      status: 'generating'
+    });
 
-    case 'custom':
-      if (!settings.image_ai_endpoint_url) {
-        throw new Error('URL для кастомного AI не настроен');
-      }
-      endpoint = settings.image_ai_endpoint_url;
-      body = {
-        prompt,
-        model: settings.image_ai_model
-      };
-      headers = {
-        'Authorization': `Bearer ${settings.image_ai_api_key}`,
-        'Content-Type': 'application/json'
-      };
-      break;
+    const data = await makeApiRequest(endpoint, requestBody, settings.text_ai_api_key);
 
-    default:
-      throw new Error('Неподдерживаемый провайдер AI');
-  }
+    onProgress?.({
+      field,
+      progress: 75,
+      status: 'generating'
+    });
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
-  });
+    let content: string;
+    
+    if (data.choices?.[0]?.message?.content) {
+      content = data.choices[0].message.content;
+    } else if (data.choices?.[0]?.text) {
+      content = data.choices[0].text;
+    } else if (typeof data.choices?.[0] === 'string') {
+      content = data.choices[0];
+    } else if (typeof data.response === 'string') {
+      content = data.response;
+    } else {
+      throw new Error('Неподдерживаемый формат ответа от API');
+    }
 
-  if (!response.ok) {
-    throw new Error('Ошибка при генерации изображения');
-  }
+    const cleanedContent = cleanAiResponse(content);
 
-  const data = await response.json();
-  
-  // Извлекаем URL изображения из ответа в зависимости от провайдера
-  switch (settings.image_ai_provider) {
-    case 'openai':
-      return data.data[0].url;
-    case 'stability':
-      return `data:image/png;base64,${data.artifacts[0].base64}`;
-    case 'custom':
-      return data.image_url;
-    default:
-      throw new Error('Неподдерживаемый формат ответа');
+    onProgress?.({
+      field,
+      progress: 100,
+      status: 'completed'
+    });
+
+    return cleanedContent;
+  } catch (error) {
+    onProgress?.({
+      field,
+      progress: 100,
+      status: 'error',
+      error: error instanceof Error ? error.message : 'Ошибка генерации'
+    });
+    throw error;
   }
 }

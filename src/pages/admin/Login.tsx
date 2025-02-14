@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useForm } from 'react-hook-form';
@@ -14,6 +14,35 @@ interface LoginForm {
 export function Login() {
   const navigate = useNavigate();
   const { register, handleSubmit, formState: { errors } } = useForm<LoginForm>();
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [cursorVariant, setCursorVariant] = useState('default');
+
+  useEffect(() => {
+    const mouseMove = (e: MouseEvent) => {
+      setMousePosition({
+        x: e.clientX,
+        y: e.clientY
+      });
+    };
+
+    window.addEventListener('mousemove', mouseMove);
+    return () => {
+      window.removeEventListener('mousemove', mouseMove);
+    };
+  }, []);
+
+  const variants = {
+    default: {
+      x: mousePosition.x - 16,
+      y: mousePosition.y - 16,
+      scale: 1
+    },
+    hover: {
+      scale: 1.5,
+      x: mousePosition.x - 16,
+      y: mousePosition.y - 16
+    }
+  };
 
   const onSubmit = async (data: LoginForm) => {
     try {
@@ -33,6 +62,11 @@ export function Login() {
 
   return (
     <div className="min-h-screen bg-[#0A0A0F] flex items-center justify-center p-4">
+      <motion.div
+        className="custom-cursor"
+        variants={variants}
+        animate={cursorVariant}
+      />
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -54,6 +88,8 @@ export function Login() {
                 type="email"
                 placeholder="Email"
                 className="w-full p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none transition-colors"
+                onMouseEnter={() => setCursorVariant('hover')}
+                onMouseLeave={() => setCursorVariant('default')}
               />
               {errors.email && (
                 <p className="mt-1 text-sm text-red-400">{errors.email.message}</p>
@@ -65,17 +101,21 @@ export function Login() {
                 type="password"
                 placeholder="Пароль"
                 className="w-full p-3 rounded-lg bg-black/50 border border-[#00ff8c]/20 focus:border-[#00ff8c] outline-none transition-colors"
+                onMouseEnter={() => setCursorVariant('hover')}
+                onMouseLeave={() => setCursorVariant('default')}
               />
               {errors.password && (
                 <p className="mt-1 text-sm text-red-400">{errors.password.message}</p>
               )}
             </div>
-            <button
+            <motion.button
               type="submit"
               className="w-full py-3 bg-[#00ff8c]/20 rounded-lg text-white font-medium hover:bg-[#00ff8c]/30 transition-colors neon-border"
+              onMouseEnter={() => setCursorVariant('hover')}
+              onMouseLeave={() => setCursorVariant('default')}
             >
               Войти
-            </button>
+            </motion.button>
           </form>
         </div>
       </motion.div>

@@ -3,18 +3,14 @@
 
   1. New Tables
     - `site_settings`
-      - `id` (uuid, primary key)
-      - `site_name` (text) - название сайта
-      - `logo_url` (text) - URL логотипа
-      - `imgbb_api_key` (text) - ключ API ImgBB
-      - `openai_api_key` (text) - ключ API OpenAI
-      - `created_at` (timestamptz)
-      - `updated_at` (timestamptz)
-
+      - Basic site configuration
+      - API keys and credentials
+      - Created and updated timestamps
+  
   2. Security
-    - Enable RLS on `site_settings` table
-    - Add policy for authenticated users to manage settings
-    - Add policy for public to read non-sensitive settings
+    - Enable RLS
+    - Public read access for non-sensitive data
+    - Full access for authenticated users
 */
 
 -- Create settings table
@@ -35,16 +31,29 @@ ALTER TABLE site_settings ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Public can read non-sensitive settings"
   ON site_settings
   FOR SELECT
-  USING (true)
-  WITH CHECK (false);
+  USING (true);
 
--- Only authenticated users can manage settings
-CREATE POLICY "Authenticated users can manage settings"
+-- Authenticated users can insert settings
+CREATE POLICY "Authenticated users can insert settings"
   ON site_settings
-  FOR ALL
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (true);
+
+-- Authenticated users can update settings
+CREATE POLICY "Authenticated users can update settings"
+  ON site_settings
+  FOR UPDATE
   TO authenticated
   USING (true)
   WITH CHECK (true);
+
+-- Authenticated users can delete settings
+CREATE POLICY "Authenticated users can delete settings"
+  ON site_settings
+  FOR DELETE
+  TO authenticated
+  USING (true);
 
 -- Update trigger for updated_at
 CREATE TRIGGER update_site_settings_updated_at

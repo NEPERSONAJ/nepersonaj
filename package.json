@@ -11,6 +11,10 @@
   },
   "dependencies": {
     "lucide-react": "^0.344.0",
+    "@fortawesome/fontawesome-svg-core": "^6.5.1",
+    "@fortawesome/free-brands-svg-icons": "^6.5.1",
+    "@fortawesome/free-solid-svg-icons": "^6.5.1",
+    "@fortawesome/react-fontawesome": "^0.2.0",
     "react": "^18.3.1",
     "framer-motion": "^11.0.8",
     "react-dom": "^18.3.1",
